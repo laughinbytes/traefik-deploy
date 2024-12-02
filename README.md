@@ -7,9 +7,10 @@
 - 一键远程安装
 - 自动配置 HTTP 到 HTTPS 重定向
 - 自动申请和更新 SSL 证书 (Let's Encrypt)
-- 安全的 Dashboard 访问（带认证）
+- 安全的 Dashboard 访问（随机生成用户名和密码）
 - 动态配置文件管理
 - 完整的安全配置
+- 自动配置 Docker 网络
 - 支持所有主流 Linux 发行版
 
 ## 快速开始
@@ -17,14 +18,20 @@
 使用以下命令一键安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/traefik-deploy/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/install.sh | sudo bash
 ```
+
+安装过程中需要输入：
+- 用于 Let's Encrypt 证书通知的邮箱地址
+- Traefik Dashboard 的域名
 
 ## 系统要求
 
 - Linux 操作系统
 - Root 权限
 - 互联网连接
+- 80 和 443 端口可访问
+- 域名已正确解析到服务器 IP
 
 ## 配置说明
 
@@ -50,8 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/yourusername/traefik-deploy/main/in
 - 自动 HTTPS 重定向
 - 安全的 HTTP 头配置
 - 速率限制
-- IP 白名单支持
-- Dashboard 访问认证
+- Dashboard 访问认证（随机用户名密码）
 
 ## 自定义配置
 
