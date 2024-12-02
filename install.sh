@@ -95,10 +95,10 @@ install_dependencies() {
     
     if [ "$PKG_MANAGER" = "apt-get" ]; then
         apt-get update || handle_error "更新包管理器失败"
-        apt-get install -y curl wget git || handle_error "安装基础依赖失败"
+        apt-get install -y curl wget git dnsutils || handle_error "安装基础依赖失败"
     elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
         $PKG_MANAGER update -y || handle_error "更新包管理器失败"
-        $PKG_MANAGER install -y curl wget git || handle_error "安装基础依赖失败"
+        $PKG_MANAGER install -y curl wget git bind-utils || handle_error "安装基础依赖失败"
     fi
 }
 
@@ -159,34 +159,117 @@ generate_password() {
     echo "密码: $DASHBOARD_PASSWORD"
 }
 
-# 配置email
-configure_email() {
-    log_info "配置 Let's Encrypt 邮箱..."
-    read -p "请输入用于 Let's Encrypt 证书通知的邮箱地址: " email
+# 检查域名解析
+check_domain_resolution() {
+    local domain=$1
+    local resolved=false
     
-    if [[ ! "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        log_error "无效的邮箱地址"
-        configure_email
-        return
+    # 尝试使用 host 命令
+    if command -v host >/dev/null 2>&1; then
+        if host "$domain" >/dev/null 2>&1; then
+            resolved=true
+        fi
+    # 如果 host 命令不可用，尝试使用 nslookup
+    elif command -v nslookup >/dev/null 2>&1; then
+        if nslookup "$domain" >/dev/null 2>&1; then
+            resolved=true
+        fi
+    # 如果都不可用，尝试使用 dig
+    elif command -v dig >/dev/null 2>&1; then
+        if dig "$domain" >/dev/null 2>&1; then
+            resolved=true
+        fi
     fi
     
-    echo "TRAEFIK_ACME_EMAIL=$email" > /etc/traefik/.env || handle_error "配置邮箱失败"
-    log_info "邮箱配置完成: $email"
+    echo "$resolved"
+}
+
+# 配置email
+configure_email() {
+    local max_attempts=3
+    local attempt=1
+    local email=""
+    
+    while [ $attempt -le $max_attempts ]; do
+        log_info "配置 Let's Encrypt 邮箱... (尝试 $attempt/$max_attempts)"
+        echo "邮箱地址将用于接收 Let's Encrypt 的证书过期通知和重要提醒"
+        read -p "请输入邮箱地址 (例如: your.name@example.com): " email
+        
+        # 检查是否输入为空
+        if [ -z "$email" ]; then
+            log_error "邮箱地址不能为空"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        
+        # 验证邮箱格式
+        if [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+            # 尝试写入配置文件
+            if echo "TRAEFIK_ACME_EMAIL=$email" > /etc/traefik/.env; then
+                log_info "邮箱配置成功: $email"
+                return 0
+            else
+                log_error "无法写入配置文件"
+                rollback "邮箱配置失败"
+                return 1
+            fi
+        else
+            log_error "无效的邮箱格式，请使用正确的邮箱地址格式"
+            attempt=$((attempt + 1))
+        fi
+    done
+    
+    log_error "已达到最大重试次数 ($max_attempts 次)"
+    rollback "邮箱配置失败"
+    return 1
 }
 
 # 配置域名
 configure_domain() {
-    log_info "配置 Traefik Dashboard 域名..."
-    read -p "请输入 Traefik Dashboard 的域名 (例如: traefik.yourdomain.com): " domain
+    local max_attempts=3
+    local attempt=1
+    local domain=""
     
-    if [[ ! "$domain" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        log_error "无效的域名格式"
-        configure_domain
-        return
-    fi
+    while [ $attempt -le $max_attempts ]; do
+        log_info "配置域名... (尝试 $attempt/$max_attempts)"
+        echo "请输入您的域名，确保该域名已经正确解析到本服务器IP"
+        read -p "请输入域名 (例如: example.com 或 sub.example.com): " domain
+        
+        # 检查是否输入为空
+        if [ -z "$domain" ]; then
+            log_error "域名不能为空"
+            attempt=$((attempt + 1))
+            continue
+        fi
+        
+        # 验证域名格式
+        if [[ "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+            # 检查域名解析
+            log_info "正在检查域名解析..."
+            if [ "$(check_domain_resolution "$domain")" = "true" ]; then
+                # 尝试写入配置文件
+                if echo "TRAEFIK_DOMAIN=$domain" >> /etc/traefik/.env; then
+                    log_info "域名配置成功: $domain"
+                    return 0
+                else
+                    log_error "无法写入配置文件"
+                    rollback "域名配置失败"
+                    return 1
+                fi
+            else
+                log_error "域名解析失败，请确保域名已正确解析到服务器IP"
+                attempt=$((attempt + 1))
+                continue
+            fi
+        else
+            log_error "无效的域名格式，请使用正确的域名格式"
+            attempt=$((attempt + 1))
+        fi
+    done
     
-    echo "TRAEFIK_DOMAIN=$domain" >> /etc/traefik/.env || handle_error "配置域名失败"
-    log_info "域名配置完成: $domain"
+    log_error "已达到最大重试次数 ($max_attempts 次)"
+    rollback "域名配置失败"
+    return 1
 }
 
 # 下载配置文件
