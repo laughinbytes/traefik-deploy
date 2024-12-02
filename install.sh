@@ -288,6 +288,8 @@ download_configs() {
 start_traefik() {
     log_info "启动Traefik..."
     cd /etc/traefik
+    # 创建 Docker 网络（如果不存在）
+    docker network inspect traefik_proxy >/dev/null 2>&1 || docker network create traefik_proxy
     docker-compose up -d || handle_error "启动Traefik失败"
 }
 
