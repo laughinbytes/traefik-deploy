@@ -134,6 +134,12 @@ create_directories() {
     mkdir -p /etc/traefik
     mkdir -p /etc/traefik/dynamic
     mkdir -p /etc/traefik/acme
+    
+    # 设置目录权限
+    chown -R root:root /etc/traefik
+    chmod 755 /etc/traefik
+    chmod 755 /etc/traefik/dynamic
+    chmod 755 /etc/traefik/acme
 }
 
 # 生成密码
@@ -287,10 +293,86 @@ download_configs() {
 # 启动Traefik
 start_traefik() {
     log_info "启动Traefik..."
-    cd /etc/traefik
-    # 创建 Docker 网络（如果不存在）
-    docker network inspect traefik_proxy >/dev/null 2>&1 || docker network create traefik_proxy
-    docker-compose up -d || handle_error "启动Traefik失败"
+    cd /etc/traefik || handle_error "无法进入 Traefik 配置目录"
+    
+    # 创建 Docker 网络
+    if ! docker network inspect traefik_proxy >/dev/null 2>&1; then
+        log_info "创建 Docker 网络: traefik_proxy"
+        docker network create traefik_proxy || handle_error "创建 Docker 网络失败"
+    fi
+    
+    # 停止现有的 Traefik 容器（如果存在）
+    docker-compose down >/dev/null 2>&1 || true
+    
+    # 启动 Traefik
+    docker-compose up -d || handle_error "启动 Traefik 失败"
+    
+    # 等待 Traefik 启动
+    log_info "等待 Traefik 启动..."
+    local max_attempts=12
+    local attempt=1
+    local container_ok=false
+    
+    while [ $attempt -le $max_attempts ]; do
+        # 检查容器状态
+        if docker-compose ps | grep -q "traefik.*Up.*"; then
+            # 检查容器健康状态
+            if docker inspect --format '{{.State.Running}}' traefik 2>/dev/null | grep -q "true"; then
+                # 检查端口是否正在监听
+                if netstat -tln | grep -q ":80.*LISTEN" && netstat -tln | grep -q ":443.*LISTEN"; then
+                    container_ok=true
+                    break
+                fi
+            fi
+        fi
+        
+        log_info "等待服务就绪... (尝试 $attempt/$max_attempts)"
+        sleep 5
+        attempt=$((attempt + 1))
+    done
+
+    if [ "$container_ok" != "true" ]; then
+        log_error "Traefik 服务未能正常启动"
+        log_error "容器日志:"
+        docker-compose logs
+        handle_error "服务启动失败"
+    fi
+
+    # 检查证书配置
+    log_info "检查证书配置..."
+    local max_cert_attempts=12  # 最多等待 2 分钟
+    local cert_attempt=1
+    local cert_ok=false
+
+    while [ $cert_attempt -le $max_cert_attempts ]; do
+        # 检查容器日志中是否有证书相关错误
+        if docker-compose logs | grep -i "error.*certificate" >/dev/null 2>&1; then
+            log_error "证书配置发生错误"
+            docker-compose logs | grep -i "error.*certificate"
+            handle_error "SSL证书配置失败"
+        fi
+
+        # 检查 acme.json 是否包含证书数据
+        if [ -s "/etc/traefik/acme/acme.json" ]; then
+            if grep -q "Certificate" "/etc/traefik/acme/acme.json" 2>/dev/null; then
+                cert_ok=true
+                break
+            fi
+        fi
+
+        log_info "等待证书配置完成... (尝试 $cert_attempt/$max_cert_attempts)"
+        sleep 10
+        cert_attempt=$((cert_attempt + 1))
+    done
+
+    if [ "$cert_ok" != "true" ]; then
+        log_error "等待证书配置超时"
+        log_error "Traefik 日志:"
+        docker-compose logs
+        handle_error "SSL证书配置失败"
+    fi
+
+    log_info "Traefik 服务启动成功"
 }
 
 # 主函数

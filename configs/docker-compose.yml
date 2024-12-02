@@ -29,6 +29,7 @@ services:
       - "traefik.http.routers.traefik.tls=true"
       - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
       - "traefik.http.routers.traefik.service=api@internal"
+      - "traefik.http.routers.traefik.middlewares=auth,secure-headers,rate-limit"
       
       # 认证中间件
       - "traefik.http.middlewares.auth.basicauth.usersfile=/etc/traefik/dashboard_users.htpasswd"
