@@ -147,9 +147,9 @@ generate_password() {
         fi
     fi
     
-    # 生成随机密码
+    # 生成随机用户名和密码
+    DASHBOARD_USER=$(openssl rand -hex 6) || handle_error "生成用户名失败"
     DASHBOARD_PASSWORD=$(openssl rand -base64 12) || handle_error "生成密码失败"
-    DASHBOARD_USER="admin"
     
     # 创建密码文件
     htpasswd -bc /etc/traefik/dashboard_users.htpasswd $DASHBOARD_USER $DASHBOARD_PASSWORD || handle_error "创建密码文件失败"
@@ -194,11 +194,11 @@ download_configs() {
     log_info "下载配置文件..."
     
     # 下载基础配置
-    curl -L https://raw.githubusercontent.com/yourusername/traefik-deploy/main/configs/traefik.yml -o /etc/traefik/traefik.yml || handle_error "下载traefik.yml失败"
-    curl -L https://raw.githubusercontent.com/yourusername/traefik-deploy/main/configs/docker-compose.yml -o /etc/traefik/docker-compose.yml || handle_error "下载docker-compose.yml失败"
+    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/traefik.yml -o /etc/traefik/traefik.yml || handle_error "下载traefik.yml失败"
+    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/docker-compose.yml -o /etc/traefik/docker-compose.yml || handle_error "下载docker-compose.yml失败"
     
     # 下载动态配置
-    curl -L https://raw.githubusercontent.com/yourusername/traefik-deploy/main/configs/dynamic/middleware.yml -o /etc/traefik/dynamic/middleware.yml || handle_error "下载middleware.yml失败"
+    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/dynamic/middleware.yml -o /etc/traefik/dynamic/middleware.yml || handle_error "下载middleware.yml失败"
 }
 
 # 启动Traefik
