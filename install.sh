@@ -298,16 +298,18 @@ main() {
     # 设置 trap 来捕获错误
     trap 'handle_error "未知错误"' ERR
     
-    # 首先获取必要的配置信息
-    configure_email || handle_error "邮箱配置失败"
-    configure_domain || handle_error "域名配置失败"
-    
-    # 执行安装步骤
+    # 首先执行基础安装步骤
     check_system_requirements
     install_dependencies
     install_docker
     install_docker_compose
     create_directories
+    
+    # 然后获取配置信息
+    configure_email || handle_error "邮箱配置失败"
+    configure_domain || handle_error "域名配置失败"
+    
+    # 最后执行配置和启动
     generate_password
     download_configs
     start_traefik
