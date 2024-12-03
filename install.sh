@@ -92,6 +92,80 @@ check_system_requirements() {
     fi
 }
 
+# 检查系统环境
+check_environment() {
+    log_info "检查系统环境..."
+    
+    # 检查必要的系统工具
+    local required_tools="curl wget netstat dig docker"
+    for tool in $required_tools; do
+        if ! command -v "$tool" >/dev/null; then
+            log_error "缺少必要工具: $tool"
+            return 1
+        fi
+    done
+    
+    # 检查系统资源
+    log_info "检查系统资源..."
+    
+    # 检查内存
+    local total_mem=$(free -m | awk '/^Mem:/{print $2}')
+    if [ "$total_mem" -lt 1024 ]; then
+        log_warn "系统内存小于1GB，可能影响性能"
+    fi
+    
+    # 检查磁盘空间
+    local free_space=$(df -m /var/lib/docker | awk 'NR==2 {print $4}')
+    if [ "$free_space" -lt 1024 ]; then
+        log_warn "Docker目录剩余空间小于1GB"
+    fi
+    
+    # 检查端口占用
+    log_info "检查端口占用..."
+    local ports="80 443"
+    for port in $ports; do
+        if netstat -tln | grep -q ":$port "; then
+            log_error "端口 $port 已被占用"
+            netstat -tlnp | grep ":$port"
+            return 1
+        fi
+    done
+    
+    # 检查防火墙状态
+    if command -v ufw >/dev/null; then
+        log_info "检查UFW防火墙状态..."
+        if ufw status | grep -q "Status: active"; then
+            if ! ufw status | grep -qE "80.*(ALLOW|允许)"; then
+                log_warn "UFW防火墙可能阻止80端口"
+            fi
+            if ! ufw status | grep -qE "443.*(ALLOW|允许)"; then
+                log_warn "UFW防火墙可能阻止443端口"
+            fi
+        fi
+    fi
+    
+    # 检查SELinux状态
+    if command -v getenforce >/dev/null; then
+        log_info "检查SELinux状态..."
+        if [ "$(getenforce)" = "Enforcing" ]; then
+            log_warn "SELinux处于强制模式，可能需要配置策略"
+        fi
+    fi
+    
+    # 检查系统时间同步
+    log_info "检查系统时间同步..."
+    if ! command -v ntpstat >/dev/null && ! command -v timedatectl >/dev/null; then
+        log_warn "未安装时间同步服务"
+    elif command -v timedatectl >/dev/null; then
+        if ! timedatectl status | grep -q "synchronized: yes"; then
+            log_warn "系统时间未同步，可能影响证书验证"
+        fi
+    fi
+    
+    log_info "环境检查完成"
+    return 0
+}
+
 # 安装依赖
 install_dependencies() {
     log_info "安装必要依赖..."
@@ -274,8 +348,48 @@ download_configs() {
     curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/traefik.yml -o /etc/traefik/traefik.yml || handle_error "下载traefik.yml失败"
     curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/docker-compose.yml -o /etc/traefik/docker-compose.yml || handle_error "下载docker-compose.yml失败"
     
-    # 下载动态配置
-    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/dynamic/middleware.yml -o /etc/traefik/dynamic/middleware.yml || handle_error "下载middleware.yml失败"
+    # 验证配置文件
+    log_info "验证配置文件..."
+    
+    # 验证 traefik.yml
+    if [ ! -s "/etc/traefik/traefik.yml" ]; then
+        log_error "traefik.yml 文件为空"
+        return 1
+    fi
+    
+    if ! grep -q "certificatesResolvers" /etc/traefik/traefik.yml; then
+        log_error "traefik.yml 缺少证书解析器配置"
+        return 1
+    fi
+    
+    if ! grep -q "acme:" /etc/traefik/traefik.yml; then
+        log_error "traefik.yml 缺少 ACME 配置"
+        return 1
+    fi
+    
+    # 验证 docker-compose.yml
+    if [ ! -s "/etc/traefik/docker-compose.yml" ]; then
+        log_error "docker-compose.yml 文件为空"
+        return 1
+    fi
+    
+    if ! grep -q "traefik:v" /etc/traefik/docker-compose.yml; then
+        log_error "docker-compose.yml 缺少 Traefik 镜像配置"
+        return 1
+    fi
+    
+    # 验证配置文件语法
+    if command -v yamllint >/dev/null; then
+        log_info "验证YAML语法..."
+        if ! yamllint -d relaxed /etc/traefik/traefik.yml; then
+            log_warn "traefik.yml 可能存在语法问题"
+        fi
+        if ! yamllint -d relaxed /etc/traefik/docker-compose.yml; then
+            log_warn "docker-compose.yml 可能存在语法问题"
+        fi
+    fi
+    
+    log_info "配置文件验证完成"
 }
 
 # 验证 Traefik 健康状态
@@ -285,7 +399,18 @@ verify_traefik_health() {
     # 检查容器状态
     if ! docker ps | grep -q "traefik.*Up"; then
         log_error "Traefik 容器未运行"
+        log_info "输出容器日志以便调试..."
+        docker logs traefik
         return 1
+    fi
+    
+    # 检查端口监听状态
+    log_info "检查端口监听状态..."
+    if ! netstat -tln | grep -q ":80 "; then
+        log_warn "80端口未监听"
+    fi
+    if ! netstat -tln | grep -q ":443 "; then
+        log_warn "443端口未监听"
     fi
     
     # 验证 HTTPS 访问
@@ -296,16 +421,47 @@ verify_traefik_health() {
     
     while [ $attempt -le $max_attempts ]; do
         log_info "等待 HTTPS 服务就绪... ($attempt/$max_attempts)"
-        if curl -sk "https://${DOMAIN}" >/dev/null 2>&1; then
-            success=true
-            break
+        
+        # 检查证书文件
+        if [ -f "/etc/traefik/acme/acme.json" ]; then
+            log_info "检查证书状态..."
+            if grep -q "\"status\": \"valid\"" /etc/traefik/acme/acme.json; then
+                log_info "证书已成功获取"
+            else
+                log_warn "证书尚未验证成功"
+                # 输出证书文件内容（排除敏感信息）
+                cat /etc/traefik/acme/acme.json | grep -v "key" | grep -v "cert"
+            fi
+        else
+            log_warn "证书文件尚未生成"
         fi
+        
+        # 使用curl检查HTTPS可用性，输出详细信息
+        local curl_output
+        curl_output=$(curl -skvL "https://${DOMAIN}" 2>&1)
+        if echo "$curl_output" | grep -q "HTTP/2 200\|HTTP/1.1 200\|HTTP/2 404\|HTTP/1.1 404"; then
+            success=true
+            log_info "HTTPS连接成功"
+            break
+        else
+            log_warn "HTTPS连接失败，详细信息："
+            echo "$curl_output" | grep "SSL\|TLS\|certificate\|error"
+        fi
+        
         attempt=$((attempt + 1))
-        sleep 2
+        # 增加等待时间到10秒
+        sleep 10
     done
     
     if [ "$success" = false ]; then
         log_error "无法通过 HTTPS 访问 Traefik"
+        log_info "诊断信息："
+        log_info "1. 检查 Traefik 日志..."
+        docker logs traefik
+        log_info "2. 检查 Traefik 配置..."
+        cat /etc/traefik/traefik.yml
+        log_info "3. 检查 DNS 解析..."
+        dig +short "${DOMAIN}"
         return 1
     fi
     
@@ -461,9 +617,11 @@ main() {
     # 解析命令行参数
     parse_arguments "$@"
     
-    # 设置 trap 来捕获错误和中断信号
-    trap 'rollback "安装过程被中断"' INT TERM
-    trap 'rollback "安装过程发生错误"' ERR
+    # 检查系统环境
+    if ! check_environment; then
+        log_error "环境检查失败"
+        exit 1
+    fi
     
     # 检查系统要求
     check_system_requirements
