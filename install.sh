@@ -261,15 +261,17 @@ generate_password() {
     fi
     
     # 生成随机用户名和密码
-    DASHBOARD_USER=$(openssl rand -hex 6) || handle_error "生成用户名失败"
-    DASHBOARD_PASSWORD=$(openssl rand -base64 12) || handle_error "生成密码失败"
+    local temp_user
+    local temp_pass
+    temp_user=$(openssl rand -hex 6) || handle_error "生成用户名失败"
+    temp_pass=$(openssl rand -base64 12) || handle_error "生成密码失败"
     
     # 创建密码文件
-    htpasswd -bc /etc/traefik/dashboard_users.htpasswd "$DASHBOARD_USER" "$DASHBOARD_PASSWORD" || handle_error "创建密码文件失败"
+    htpasswd -bc /etc/traefik/dashboard_users.htpasswd "$temp_user" "$temp_pass" || handle_error "创建密码文件失败"
     
     # 导出变量供主函数使用
-    export TRAEFIK_DASHBOARD_USER="$DASHBOARD_USER"
-    export TRAEFIK_DASHBOARD_PASSWORD="$DASHBOARD_PASSWORD"
+    export TRAEFIK_DASHBOARD_USER="$temp_user"
+    export TRAEFIK_DASHBOARD_PASSWORD="$temp_pass"
     
     return 0
 }
@@ -301,19 +303,20 @@ check_domain_resolution() {
 
 # 配置email
 configure_email() {
+    local input_email="$1"
     log_info "配置邮箱..."
     
     # 验证邮箱格式
-    if [[ ! "$EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        log_error "无效的邮箱格式: $EMAIL"
+    if [[ ! "$input_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        log_error "无效的邮箱格式: $input_email"
         exit 1
     fi
     
     # 导出环境变量
-    export TRAEFIK_ACME_EMAIL="$EMAIL"
+    export TRAEFIK_ACME_EMAIL="$input_email"
     # 写入到环境文件
-    echo "TRAEFIK_ACME_EMAIL=$EMAIL" > /etc/traefik/.env
-    log_info "邮箱配置成功: $EMAIL"
+    echo "TRAEFIK_ACME_EMAIL=$input_email" > /etc/traefik/.env
+    log_info "邮箱配置成功: $input_email"
 }
 
 # 配置域名
@@ -438,7 +441,11 @@ verify_traefik_health() {
         
         # 使用curl检查HTTPS可用性，输出详细信息
         local curl_output
-        curl_output=$(curl -skvL "https://${DOMAIN}" 2>&1)
+        if [ -z "$TRAEFIK_DOMAIN" ]; then
+            log_error "域名变量为空"
+            return 1
+        fi
+        curl_output=$(curl -skvL "https://${TRAEFIK_DOMAIN}" 2>&1)
         if echo "$curl_output" | grep -q "HTTP/2 200\|HTTP/1.1 200\|HTTP/2 404\|HTTP/1.1 404"; then
             success=true
             log_info "HTTPS连接成功"
@@ -461,7 +468,7 @@ verify_traefik_health() {
         log_info "2. 检查 Traefik 配置..."
         cat /etc/traefik/traefik.yml
         log_info "3. 检查 DNS 解析..."
-        dig +short "${DOMAIN}"
+        dig +short "${TRAEFIK_DOMAIN}"
         # 添加更多诊断信息
         log_info "4. 检查 acme.json 文件..."
         if [ -f "/etc/traefik/acme/acme.json" ]; then
@@ -470,7 +477,7 @@ verify_traefik_health() {
             log_warn "acme.json 文件不存在"
         fi
         log_info "5. 检查域名解析..."
-        dig "${DOMAIN}"
+        dig "${TRAEFIK_DOMAIN}"
         return 1
     fi
     
@@ -523,8 +530,8 @@ start_traefik() {
     fi
     
     # 设置必要的环境变量
-    export TRAEFIK_DOMAIN="$DOMAIN"
-    export TRAEFIK_ACME_EMAIL="$EMAIL"  # 添加 ACME 邮箱变量
+    export TRAEFIK_DOMAIN="$TRAEFIK_DOMAIN"
+    export TRAEFIK_ACME_EMAIL="$TRAEFIK_ACME_EMAIL"
     
     # 创建 Docker 网络（如果不存在）
     if ! docker network ls | grep -q "traefik_proxy"; then
@@ -551,24 +558,26 @@ start_traefik() {
 # 解析命令行参数
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
-        case $1 in
+        case "$1" in
             --email)
-                if [ -z "$2" ]; then
-                    log_error "--email 参数需要一个值"
+                if [ -n "$2" ]; then
+                    TRAEFIK_ACME_EMAIL="$2"
+                    shift 2
+                else
+                    log_error "缺少email参数值"
                     show_usage
                     exit 1
                 fi
-                EMAIL="$2"
-                shift 2
                 ;;
             --domain)
-                if [ -z "$2" ]; then
-                    log_error "--domain 参数需要一个值"
+                if [ -n "$2" ]; then
+                    TRAEFIK_DOMAIN="$2"
+                    shift 2
+                else
+                    log_error "缺少domain参数值"
                     show_usage
                     exit 1
                 fi
-                TRAEFIK_DOMAIN="$2"
-                shift 2
                 ;;
             --help)
                 show_usage
@@ -581,10 +590,10 @@ parse_arguments() {
                 ;;
         esac
     done
-
+    
     # 验证必要参数
-    if [ -z "$EMAIL" ] || [ -z "$TRAEFIK_DOMAIN" ]; then
-        log_error "必须提供 --email 和 --domain 参数"
+    if [ -z "$TRAEFIK_ACME_EMAIL" ] || [ -z "$TRAEFIK_DOMAIN" ]; then
+        log_error "缺少必要参数"
         show_usage
         exit 1
     fi
@@ -592,31 +601,21 @@ parse_arguments() {
 
 # 显示使用说明
 show_usage() {
-    echo "使用方法:"
-    echo "curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/install.sh | sudo bash -s -- --email user@example.com --domain traefik.example.com"
-    echo
-    echo "参数说明:"
+    echo "用法: $0 [选项]"
+    echo "选项:"
     echo "  --email EMAIL    用于 Let's Encrypt 证书通知的邮箱地址"
-    echo "  --domain DOMAIN  Traefik Dashboard 的域名"
+    echo "  --domain DOMAIN  Traefik 服务的域名"
     echo "  --help          显示此帮助信息"
 }
 
 # 生成基本认证信息
 generate_basic_auth() {
-    # 检查是否已经生成了用户名和密码
     if [ -z "$TRAEFIK_DASHBOARD_USER" ] || [ -z "$TRAEFIK_DASHBOARD_PASSWORD" ]; then
-        log_error "Dashboard 认证信息未生成"
+        log_error "缺少 Dashboard 认证信息"
         return 1
     fi
     
-    # 使用 htpasswd 生成认证字符串
     TRAEFIK_BASIC_AUTH=$(htpasswd -nb "$TRAEFIK_DASHBOARD_USER" "$TRAEFIK_DASHBOARD_PASSWORD")
-    export TRAEFIK_BASIC_AUTH
-    
-    if [ -z "$TRAEFIK_BASIC_AUTH" ]; then
-        log_error "生成基本认证信息失败"
-        return 1
-    fi
 }
 
 # 主函数
@@ -638,57 +637,43 @@ main() {
     # 安装依赖
     install_dependencies
     
-    # 安装 Docker
+    # 检查并安装 Docker
     install_docker
     
-    # 安装 Docker Compose
+    # 检查并安装 Docker Compose
     install_docker_compose
     
-    # 初始化 Traefik 配置
-    setup_traefik_config
-    
-    # 配置邮箱
-    configure_email
-    
-    # 配置域名
-    configure_domain
+    # 创建必要的目录
+    create_directories
     
     # 生成密码
     generate_password
     
+    # 配置email
+    configure_email "$TRAEFIK_ACME_EMAIL"
+    
+    # 配置域名
+    configure_domain "$TRAEFIK_DOMAIN"
+    
+    # 下载配置文件
+    download_configs
+    
     # 启动 Traefik
-    if ! start_traefik; then
+    start_traefik
+    
+    # 验证服务状态
+    if ! verify_traefik_health; then
+        log_error "Traefik 服务验证失败，开始回滚..."
+        cleanup_installation
         log_error "Traefik 安装失败"
         exit 1
     fi
     
-    # 移除错误处理 trap
-    trap - ERR INT TERM
-    
-    log_info "Traefik 安装完成!"
-    
-    # 打印安装信息
-    cat << EOF
-===================================================
-安装成功! 以下是重要信息：
-
-Traefik Dashboard:
-- 地址：https://${TRAEFIK_DOMAIN}
-- 用户名：${TRAEFIK_DASHBOARD_USER}
-- 密码：${TRAEFIK_DASHBOARD_PASSWORD}
-
-配置文件位置：
-- 主配置：/etc/traefik/traefik.yml
-- Docker配置：/etc/traefik/docker-compose.yml
-- 动态配置：/etc/traefik/dynamic/
-
-常用命令：
-- 查看日志：docker compose -f /etc/traefik/docker-compose.yml logs -f
-- 重启服务：docker compose -f /etc/traefik/docker-compose.yml restart
-- 停止服务：docker compose -f /etc/traefik/docker-compose.yml down
-- 启动服务：docker compose -f /etc/traefik/docker-compose.yml up -d
-===================================================
-EOF
+    log_info "Traefik 安装成功！"
+    log_info "Dashboard 访问信息："
+    log_info "URL: https://${TRAEFIK_DOMAIN}/dashboard/"
+    log_info "用户名: ${TRAEFIK_DASHBOARD_USER}"
+    log_info "密码: ${TRAEFIK_DASHBOARD_PASSWORD}"
 }
 
 # 执行主函数，传递所有命令行参数
