@@ -429,6 +429,24 @@ show_usage() {
     echo "  --help          显示此帮助信息"
 }
 
+# 生成基本认证信息
+generate_basic_auth() {
+    # 检查是否已经生成了用户名和密码
+    if [ -z "$TRAEFIK_DASHBOARD_USER" ] || [ -z "$TRAEFIK_DASHBOARD_PASSWORD" ]; then
+        log_error "Dashboard 认证信息未生成"
+        return 1
+    fi
+    
+    # 使用 htpasswd 生成认证字符串
+    TRAEFIK_BASIC_AUTH=$(htpasswd -nb "$TRAEFIK_DASHBOARD_USER" "$TRAEFIK_DASHBOARD_PASSWORD")
+    export TRAEFIK_BASIC_AUTH
+    
+    if [ -z "$TRAEFIK_BASIC_AUTH" ]; then
+        log_error "生成基本认证信息失败"
+        return 1
+    fi
+}
+
 # 主函数
 main() {
     log_info "开始安装 Traefik..."
@@ -465,7 +483,10 @@ main() {
     generate_password
     
     # 启动 Traefik
-    start_traefik
+    if ! start_traefik; then
+        # 如果启动失败，直接退出，不显示成功信息
+        exit 1
+    fi
     
     # 移除错误处理 trap
     trap - ERR INT TERM
