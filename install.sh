@@ -414,6 +414,43 @@ start_traefik() {
     return 0
 }
 
+# 验证 Traefik 服务健康状态
+verify_traefik_health() {
+    local max_attempts=30
+    local attempt=1
+    local wait_time=10
+
+    log_info "正在验证 Traefik 服务状态..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if curl -sf --max-time 5 "http://localhost:8080/api/overview" > /dev/null 2>&1; then
+            log_info "Traefik 服务运行正常"
+            return 0
+        fi
+        
+        log_warn "等待 Traefik 服务启动... (${attempt}/${max_attempts})"
+        sleep $wait_time
+        attempt=$((attempt + 1))
+    done
+
+    return 1
+}
+
+# 清理安装
+cleanup_installation() {
+    log_info "开始清理安装..."
+    
+    # 停止并删除 Docker 容器
+    if [ -f "/etc/traefik/docker-compose.yml" ]; then
+        cd /etc/traefik && docker compose down
+    fi
+    
+    # 删除配置文件和目录
+    rm -rf /etc/traefik
+    
+    log_info "清理完成"
+}
+
 # 解析命令行参数
 parse_arguments() {
     while [[ $# -gt 0 ]]; do
@@ -489,34 +526,43 @@ generate_basic_auth() {
 
 # 主函数
 main() {
-    log_info "开始安装 Traefik..."
-    
     # 解析命令行参数
     parse_arguments "$@"
     
-    # 检查系统环境
-    if ! check_environment; then
-        log_error "环境检查失败"
-        exit 1
-    fi
+    # 设置环境变量
+    export TRAEFIK_DOMAIN="${DOMAIN}"
+    export TRAEFIK_ACME_EMAIL="${EMAIL}"
+    
+    # 写入环境变量到配置文件
+    echo "TRAEFIK_DOMAIN=${DOMAIN}" > /etc/traefik/.env
+    echo "TRAEFIK_ACME_EMAIL=${EMAIL}" >> /etc/traefik/.env
+    
+    log_info "开始安装 Traefik..."
+    
+    # 检查环境
+    check_environment
     
     # 检查系统要求
     check_system_requirements
     
-    # 安装依赖
+    # 安装必要依赖
     install_dependencies
     
-    # 检查并安装 Docker
+    # 检查 Docker
     install_docker
     
-    # 检查并安装 Docker Compose
+    # 检查 Docker Compose
     install_docker_compose
     
     # 创建必要的目录
     create_directories
     
-    # 生成密码
+    # 生成 Dashboard 密码
     generate_password
+    
+    # 生成基本认证信息
+    log_info "生成基本认证信息..."
+    generate_basic_auth
     
     # 下载配置文件
     download_configs
