@@ -97,7 +97,7 @@ check_environment() {
     log_info "检查系统环境..."
     
     # 检查必要的系统工具
-    local required_tools="curl wget netstat dig docker"
+    local required_tools="curl wget dig docker"
     for tool in $required_tools; do
         if ! command -v "$tool" >/dev/null; then
             log_error "缺少必要工具: $tool"
@@ -124,9 +124,9 @@ check_environment() {
     log_info "检查端口占用..."
     local ports="80 443"
     for port in $ports; do
-        if netstat -tln | grep -q ":$port "; then
+        if ss -tln | grep -q ":$port "; then
             log_error "端口 $port 已被占用"
-            netstat -tlnp | grep ":$port"
+            ss -tlnp | grep ":$port"
             return 1
         fi
     done
@@ -406,10 +406,10 @@ verify_traefik_health() {
     
     # 检查端口监听状态
     log_info "检查端口监听状态..."
-    if ! netstat -tln | grep -q ":80 "; then
+    if ! ss -tln | grep -q ":80 "; then
         log_warn "80端口未监听"
     fi
-    if ! netstat -tln | grep -q ":443 "; then
+    if ! ss -tln | grep -q ":443 "; then
         log_warn "443端口未监听"
     fi
     
@@ -449,7 +449,6 @@ verify_traefik_health() {
         fi
         
         attempt=$((attempt + 1))
-        # 增加等待时间到10秒
         sleep 10
     done
     
