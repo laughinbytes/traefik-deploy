@@ -445,7 +445,8 @@ verify_traefik_health() {
             break
         else
             log_warn "HTTPS连接失败，详细信息："
-            echo "$curl_output" | grep "SSL\|TLS\|certificate\|error"
+            # 提取更多有用的错误信息
+            echo "$curl_output" | grep -iE "SSL|TLS|certificate|error|refused|timeout|failed|closed" || echo "$curl_output" | tail -n 5
         fi
         
         attempt=$((attempt + 1))
@@ -461,6 +462,15 @@ verify_traefik_health() {
         cat /etc/traefik/traefik.yml
         log_info "3. 检查 DNS 解析..."
         dig +short "${DOMAIN}"
+        # 添加更多诊断信息
+        log_info "4. 检查 acme.json 文件..."
+        if [ -f "/etc/traefik/acme/acme.json" ]; then
+            cat /etc/traefik/acme/acme.json | grep -v "key" | grep -v "cert"
+        else
+            log_warn "acme.json 文件不存在"
+        fi
+        log_info "5. 检查域名解析..."
+        dig "${DOMAIN}"
         return 1
     fi
     
