@@ -1,5 +1,3 @@
-version: '3'
-
 services:
   traefik:
     image: traefik:v2.10
@@ -10,6 +8,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      - TRAEFIK_DOMAIN=${TRAEFIK_DOMAIN}
+      - TRAEFIK_BASIC_AUTH=${TRAEFIK_BASIC_AUTH}
     volumes:
       - /etc/traefik:/etc/traefik
       - /var/run/docker.sock:/var/run/docker.sock:ro
