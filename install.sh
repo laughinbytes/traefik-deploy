@@ -283,7 +283,7 @@ verify_traefik_health() {
     log_info "验证 Traefik 服务状态..."
     
     # 检查容器状态
-    if ! docker compose ps | grep -q "traefik.*running"; then
+    if ! docker ps | grep -q "traefik.*Up"; then
         log_error "Traefik 容器未运行"
         return 1
     fi
@@ -352,7 +352,10 @@ start_traefik() {
     log_info "启动 Traefik..."
     
     # 生成基本认证信息
-    generate_basic_auth
+    if ! generate_basic_auth; then
+        log_error "生成基本认证信息失败"
+        return 1
+    fi
     
     # 设置必要的环境变量
     export TRAEFIK_DOMAIN="$DOMAIN"
@@ -360,20 +363,24 @@ start_traefik() {
     
     # 创建 Docker 网络（如果不存在）
     if ! docker network ls | grep -q "traefik_proxy"; then
-        docker network create traefik_proxy || handle_error "创建 Docker 网络失败"
+        docker network create traefik_proxy || return 1
     fi
     
-    cd /etc/traefik || handle_error "无法进入 Traefik 配置目录"
-    docker compose up -d || handle_error "启动 Traefik 失败"
+    cd /etc/traefik || return 1
+    docker compose up -d || return 1
+    
+    # 等待一段时间让容器启动
+    sleep 5
     
     # 验证服务状态
     if ! verify_traefik_health; then
         log_error "Traefik 服务验证失败，开始回滚..."
         cleanup_installation
-        handle_error "安装失败，系统已回滚"
+        return 1
     fi
     
     log_info "Traefik 启动成功"
+    return 0
 }
 
 # 解析命令行参数
@@ -484,7 +491,7 @@ main() {
     
     # 启动 Traefik
     if ! start_traefik; then
-        # 如果启动失败，直接退出，不显示成功信息
+        log_error "Traefik 安装失败"
         exit 1
     fi
     
@@ -494,25 +501,27 @@ main() {
     log_info "Traefik 安装完成!"
     
     # 打印安装信息
-    echo "==================================================="
-    echo "安装成功! 以下是重要信息："
-    echo
-    echo "Traefik Dashboard:"
-    echo "- 地址：https://$TRAEFIK_DOMAIN"
-    echo "- 用户名：$TRAEFIK_DASHBOARD_USER"
-    echo "- 密码：$TRAEFIK_DASHBOARD_PASSWORD"
-    echo
-    echo "配置文件位置："
-    echo "- 主配置：/etc/traefik/traefik.yml"
-    echo "- Docker配置：/etc/traefik/docker-compose.yml"
-    echo "- 动态配置：/etc/traefik/dynamic/"
-    echo
-    echo "常用命令："
-    echo "- 查看日志：docker compose -f /etc/traefik/docker-compose.yml logs -f"
-    echo "- 重启服务：docker compose -f /etc/traefik/docker-compose.yml restart"
-    echo "- 停止服务：docker compose -f /etc/traefik/docker-compose.yml down"
-    echo "- 启动服务：docker compose -f /etc/traefik/docker-compose.yml up -d"
-    echo "==================================================="
+    cat << EOF
+===================================================
+安装成功! 以下是重要信息：
+
+Traefik Dashboard:
+- 地址：https://${TRAEFIK_DOMAIN}
+- 用户名：${TRAEFIK_DASHBOARD_USER}
+- 密码：${TRAEFIK_DASHBOARD_PASSWORD}
+
+配置文件位置：
+- 主配置：/etc/traefik/traefik.yml
+- Docker配置：/etc/traefik/docker-compose.yml
+- 动态配置：/etc/traefik/dynamic/
+
+常用命令：
+- 查看日志：docker compose -f /etc/traefik/docker-compose.yml logs -f
+- 重启服务：docker compose -f /etc/traefik/docker-compose.yml restart
+- 停止服务：docker compose -f /etc/traefik/docker-compose.yml down
+- 启动服务：docker compose -f /etc/traefik/docker-compose.yml up -d
+===================================================
+EOF
 }
 
 # 执行主函数，传递所有命令行参数
