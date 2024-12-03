@@ -1,22 +1,22 @@
 #!/bin/bash
 
 # 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
+TRAEFIK_RED='\033[0;31m'
+TRAEFIK_GREEN='\033[0;32m'
+TRAEFIK_YELLOW='\033[1;33m'
+TRAEFIK_NC='\033[0m'
 
 # 打印带颜色的信息
 log_info() {
-    echo -e "${GREEN}[INFO]${NC} $1"
+    echo -e "${TRAEFIK_GREEN}[INFO]${TRAEFIK_NC} $1"
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${TRAEFIK_YELLOW}[WARN]${TRAEFIK_NC} $1"
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${TRAEFIK_RED}[ERROR]${TRAEFIK_NC} $1"
 }
 
 # 回滚函数
@@ -42,12 +42,12 @@ rollback() {
     # 如果Docker是由脚本安装的，则卸载Docker
     if [ -f "/etc/docker/daemon.json" ]; then
         log_info "卸载Docker..."
-        if [ "$PKG_MANAGER" = "apt-get" ]; then
+        if [ "$TRAEFIK_PKG_MANAGER" = "apt-get" ]; then
             apt-get remove --purge -y docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null || true
             apt-get autoremove -y 2>/dev/null || true
-        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-            $PKG_MANAGER remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null || true
-            $PKG_MANAGER autoremove -y 2>/dev/null || true
+        elif [ "$TRAEFIK_PKG_MANAGER" = "yum" ] || [ "$TRAEFIK_PKG_MANAGER" = "dnf" ]; then
+            $TRAEFIK_PKG_MANAGER remove -y docker-ce docker-ce-cli containerd.io docker-compose-plugin 2>/dev/null || true
+            $TRAEFIK_PKG_MANAGER autoremove -y 2>/dev/null || true
         fi
         
         # 清理Docker相关文件
@@ -81,11 +81,11 @@ check_system_requirements() {
 
     # 检查系统包管理器
     if command -v apt-get >/dev/null; then
-        PKG_MANAGER="apt-get"
+        TRAEFIK_PKG_MANAGER="apt-get"
     elif command -v yum >/dev/null; then
-        PKG_MANAGER="yum"
+        TRAEFIK_PKG_MANAGER="yum"
     elif command -v dnf >/dev/null; then
-        PKG_MANAGER="dnf"
+        TRAEFIK_PKG_MANAGER="dnf"
     else
         log_error "不支持的包管理器"
         exit 1
@@ -170,12 +170,12 @@ check_environment() {
 install_dependencies() {
     log_info "安装必要依赖..."
     
-    if [ "$PKG_MANAGER" = "apt-get" ]; then
+    if [ "$TRAEFIK_PKG_MANAGER" = "apt-get" ]; then
         apt-get update || handle_error "更新包管理器失败"
         apt-get install -y curl wget git dnsutils || handle_error "安装基础依赖失败"
-    elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-        $PKG_MANAGER update -y || handle_error "更新包管理器失败"
-        $PKG_MANAGER install -y curl wget git bind-utils || handle_error "安装基础依赖失败"
+    elif [ "$TRAEFIK_PKG_MANAGER" = "yum" ] || [ "$TRAEFIK_PKG_MANAGER" = "dnf" ]; then
+        $TRAEFIK_PKG_MANAGER update -y || handle_error "更新包管理器失败"
+        $TRAEFIK_PKG_MANAGER install -y curl wget git bind-utils || handle_error "安装基础依赖失败"
     fi
 }
 
@@ -211,18 +211,18 @@ install_docker_compose() {
     # 如果 Docker 版本 >= 23.0，说明应该自带 compose 插件，可能是安装不完整
     if [ "$(printf '%s\n' "23.0" "$DOCKER_VERSION" | sort -V | head -n1)" = "23.0" ]; then
         log_warn "Docker $DOCKER_VERSION 应该包含 Compose 插件，尝试修复安装..."
-        if [ "$PKG_MANAGER" = "apt-get" ]; then
+        if [ "$TRAEFIK_PKG_MANAGER" = "apt-get" ]; then
             apt-get install -y docker-ce-cli || handle_error "安装 Docker CLI 失败"
-        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-            $PKG_MANAGER install -y docker-ce-cli || handle_error "安装 Docker CLI 失败"
+        elif [ "$TRAEFIK_PKG_MANAGER" = "yum" ] || [ "$TRAEFIK_PKG_MANAGER" = "dnf" ]; then
+            $TRAEFIK_PKG_MANAGER install -y docker-ce-cli || handle_error "安装 Docker CLI 失败"
         fi
     else
         # 对于旧版本 Docker，安装 compose 插件
         log_info "Docker 版本 < 23.0，安装 Compose 插件..."
-        if [ "$PKG_MANAGER" = "apt-get" ]; then
+        if [ "$TRAEFIK_PKG_MANAGER" = "apt-get" ]; then
             apt-get install -y docker-compose-plugin || handle_error "安装 Docker Compose 插件失败"
-        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-            $PKG_MANAGER install -y docker-compose-plugin || handle_error "安装 Docker Compose 插件失败"
+        elif [ "$TRAEFIK_PKG_MANAGER" = "yum" ] || [ "$TRAEFIK_PKG_MANAGER" = "dnf" ]; then
+            $TRAEFIK_PKG_MANAGER install -y docker-compose-plugin || handle_error "安装 Docker Compose 插件失败"
         fi
     fi
     
@@ -253,275 +253,129 @@ create_directories() {
 generate_password() {
     log_info "生成Dashboard密码..."
     if ! command -v htpasswd >/dev/null; then
-        if [ "$PKG_MANAGER" = "apt-get" ]; then
+        if [ "$TRAEFIK_PKG_MANAGER" = "apt-get" ]; then
             apt-get install -y apache2-utils || handle_error "安装htpasswd失败"
         else
-            $PKG_MANAGER install -y httpd-tools || handle_error "安装htpasswd失败"
+            $TRAEFIK_PKG_MANAGER install -y httpd-tools || handle_error "安装htpasswd失败"
         fi
     fi
     
     # 生成随机用户名和密码
-    local temp_user
-    local temp_pass
-    temp_user=$(openssl rand -hex 6) || handle_error "生成用户名失败"
-    temp_pass=$(openssl rand -base64 12) || handle_error "生成密码失败"
+    TRAEFIK_DASHBOARD_USER=$(openssl rand -hex 6) || handle_error "生成用户名失败"
+    TRAEFIK_DASHBOARD_PASSWORD=$(openssl rand -base64 12) || handle_error "生成密码失败"
     
     # 创建密码文件
-    htpasswd -bc /etc/traefik/dashboard_users.htpasswd "$temp_user" "$temp_pass" || handle_error "创建密码文件失败"
+    htpasswd -bc /etc/traefik/dashboard_users.htpasswd "$TRAEFIK_DASHBOARD_USER" "$TRAEFIK_DASHBOARD_PASSWORD" || handle_error "创建密码文件失败"
     
-    # 导出变量供主函数使用
-    export TRAEFIK_DASHBOARD_USER="$temp_user"
-    export TRAEFIK_DASHBOARD_PASSWORD="$temp_pass"
+    # 写入到环境文件
+    {
+        echo "TRAEFIK_DASHBOARD_USER=$TRAEFIK_DASHBOARD_USER"
+        echo "TRAEFIK_DASHBOARD_PASSWORD=$TRAEFIK_DASHBOARD_PASSWORD"
+    } >> /etc/traefik/.env
     
     return 0
-}
-
-# 检查域名解析
-check_domain_resolution() {
-    local domain=$1
-    local resolved=false
-    
-    # 尝试使用 host 命令
-    if command -v host >/dev/null 2>&1; then
-        if host "$domain" >/dev/null 2>&1; then
-            resolved=true
-        fi
-    # 如果 host 命令不可用，尝试使用 nslookup
-    elif command -v nslookup >/dev/null 2>&1; then
-        if nslookup "$domain" >/dev/null 2>&1; then
-            resolved=true
-        fi
-    # 如果都不可用，尝试使用 dig
-    elif command -v dig >/dev/null 2>&1; then
-        if dig "$domain" >/dev/null 2>&1; then
-            resolved=true
-        fi
-    fi
-    
-    echo "$resolved"
-}
-
-# 配置email
-configure_email() {
-    local input_email="$1"
-    log_info "配置邮箱..."
-    
-    # 验证邮箱格式
-    if [[ ! "$input_email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-        log_error "无效的邮箱格式: $input_email"
-        exit 1
-    fi
-    
-    # 导出环境变量
-    export TRAEFIK_ACME_EMAIL="$input_email"
-    # 写入到环境文件
-    echo "TRAEFIK_ACME_EMAIL=$input_email" > /etc/traefik/.env
-    log_info "邮箱配置成功: $input_email"
-}
-
-# 配置域名
-configure_domain() {
-    log_info "配置域名..."
-    
-    # 验证域名格式
-    if [[ ! "$TRAEFIK_DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
-        log_error "无效的域名格式: $TRAEFIK_DOMAIN"
-        exit 1
-    fi
-    
-    # 检查域名解析
-    log_info "正在检查域名解析..."
-    if [ "$(check_domain_resolution "$TRAEFIK_DOMAIN")" != "true" ]; then
-        log_error "域名解析失败，请确保域名 $TRAEFIK_DOMAIN 已正确解析到服务器IP"
-        exit 1
-    fi
-    
-    # 导出环境变量
-    export TRAEFIK_DOMAIN
-    # 写入到环境文件
-    echo "TRAEFIK_DOMAIN=$TRAEFIK_DOMAIN" >> /etc/traefik/.env
-    log_info "域名配置成功: $TRAEFIK_DOMAIN"
 }
 
 # 下载配置文件
 download_configs() {
     log_info "下载配置文件..."
     
-    # 下载基础配置
-    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/traefik.yml -o /etc/traefik/traefik.yml || handle_error "下载traefik.yml失败"
-    curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/docker-compose.yml -o /etc/traefik/docker-compose.yml || handle_error "下载docker-compose.yml失败"
-    
-    # 验证配置文件
-    log_info "验证配置文件..."
-    
-    # 验证 traefik.yml
-    if [ ! -s "/etc/traefik/traefik.yml" ]; then
-        log_error "traefik.yml 文件为空"
-        return 1
-    fi
-    
-    if ! grep -q "certificatesResolvers" /etc/traefik/traefik.yml; then
-        log_error "traefik.yml 缺少证书解析器配置"
-        return 1
-    fi
-    
-    if ! grep -q "acme:" /etc/traefik/traefik.yml; then
-        log_error "traefik.yml 缺少 ACME 配置"
-        return 1
-    fi
-    
-    # 验证 docker-compose.yml
-    if [ ! -s "/etc/traefik/docker-compose.yml" ]; then
-        log_error "docker-compose.yml 文件为空"
-        return 1
-    fi
-    
-    if ! grep -q "traefik:v" /etc/traefik/docker-compose.yml; then
-        log_error "docker-compose.yml 缺少 Traefik 镜像配置"
-        return 1
-    fi
-    
-    # 验证配置文件语法
-    if command -v yamllint >/dev/null; then
-        log_info "验证YAML语法..."
-        if ! yamllint -d relaxed /etc/traefik/traefik.yml; then
-            log_warn "traefik.yml 可能存在语法问题"
-        fi
-        if ! yamllint -d relaxed /etc/traefik/docker-compose.yml; then
-            log_warn "docker-compose.yml 可能存在语法问题"
-        fi
-    fi
-    
-    log_info "配置文件验证完成"
-}
+    # 下载 traefik.yml
+    cat > /etc/traefik/traefik.yml << 'EOL'
+api:
+  dashboard: true
+  debug: true
 
-# 验证 Traefik 健康状态
-verify_traefik_health() {
-    log_info "验证 Traefik 服务状态..."
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+
+  websecure:
+    address: ":443"
+    http:
+      middlewares:
+        - secureHeaders@file
+      tls:
+        certResolver: letsencrypt
+
+providers:
+  docker:
+    endpoint: "unix:///var/run/docker.sock"
+    exposedByDefault: false
+    network: traefik_proxy
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: ${TRAEFIK_ACME_EMAIL}
+      storage: /etc/traefik/acme/acme.json
+      httpChallenge:
+        entryPoint: web
+EOL
     
-    # 检查容器状态
-    if ! docker ps | grep -q "traefik.*Up"; then
-        log_error "Traefik 容器未运行"
-        log_info "输出容器日志以便调试..."
-        docker logs traefik
-        return 1
-    fi
+    # 下载 docker-compose.yml
+    cat > /etc/traefik/docker-compose.yml << 'EOL'
+version: '3'
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - traefik_proxy
+    ports:
+      - 80:80
+      - 443:443
+    environment:
+      - TRAEFIK_DOMAIN=${TRAEFIK_DOMAIN}
+      - TRAEFIK_ACME_EMAIL=${TRAEFIK_ACME_EMAIL}
+      - TRAEFIK_BASIC_AUTH=${TRAEFIK_BASIC_AUTH}
+    volumes:
+      - /etc/traefik/traefik.yml:/etc/traefik/traefik.yml:ro
+      - /etc/traefik/dynamic.yml:/etc/traefik/dynamic.yml:ro
+      - /etc/traefik/acme:/etc/traefik/acme
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.dashboard.rule=Host(`${TRAEFIK_DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.middlewares=auth"
+      - "traefik.http.middlewares.auth.basicauth.users=${TRAEFIK_BASIC_AUTH}"
+
+networks:
+  traefik_proxy:
+    external: true
+EOL
     
-    # 检查端口监听状态
-    log_info "检查端口监听状态..."
-    if ! ss -tln | grep -q ":80 "; then
-        log_warn "80端口未监听"
-    fi
-    if ! ss -tln | grep -q ":443 "; then
-        log_warn "443端口未监听"
-    fi
+    # 下载 dynamic.yml
+    cat > /etc/traefik/dynamic.yml << 'EOL'
+http:
+  middlewares:
+    secureHeaders:
+      headers:
+        sslRedirect: true
+        forceSTSHeader: true
+        stsIncludeSubdomains: true
+        stsPreload: true
+        stsSeconds: 31536000
+EOL
     
-    # 验证 HTTPS 访问
-    log_info "验证 HTTPS 访问..."
-    local max_attempts=30
-    local attempt=1
-    local success=false
-    
-    while [ $attempt -le $max_attempts ]; do
-        log_info "等待 HTTPS 服务就绪... ($attempt/$max_attempts)"
-        
-        # 检查证书文件
-        if [ -f "/etc/traefik/acme/acme.json" ]; then
-            log_info "检查证书状态..."
-            if grep -q "\"status\": \"valid\"" /etc/traefik/acme/acme.json; then
-                log_info "证书已成功获取"
-            else
-                log_warn "证书尚未验证成功"
-                # 输出证书文件内容（排除敏感信息）
-                cat /etc/traefik/acme/acme.json | grep -v "key" | grep -v "cert"
-            fi
-        else
-            log_warn "证书文件尚未生成"
-        fi
-        
-        # 使用curl检查HTTPS可用性，输出详细信息
-        local curl_output
-        if [ -z "$TRAEFIK_DOMAIN" ]; then
-            log_error "域名变量为空"
-            return 1
-        fi
-        curl_output=$(curl -skvL "https://${TRAEFIK_DOMAIN}" 2>&1)
-        if echo "$curl_output" | grep -q "HTTP/2 200\|HTTP/1.1 200\|HTTP/2 404\|HTTP/1.1 404"; then
-            success=true
-            log_info "HTTPS连接成功"
-            break
-        else
-            log_warn "HTTPS连接失败，详细信息："
-            # 提取更多有用的错误信息
-            echo "$curl_output" | grep -iE "SSL|TLS|certificate|error|refused|timeout|failed|closed" || echo "$curl_output" | tail -n 5
-        fi
-        
-        attempt=$((attempt + 1))
-        sleep 10
-    done
-    
-    if [ "$success" = false ]; then
-        log_error "无法通过 HTTPS 访问 Traefik"
-        log_info "诊断信息："
-        log_info "1. 检查 Traefik 日志..."
-        docker logs traefik
-        log_info "2. 检查 Traefik 配置..."
-        cat /etc/traefik/traefik.yml
-        log_info "3. 检查 DNS 解析..."
-        dig +short "${TRAEFIK_DOMAIN}"
-        # 添加更多诊断信息
-        log_info "4. 检查 acme.json 文件..."
-        if [ -f "/etc/traefik/acme/acme.json" ]; then
-            cat /etc/traefik/acme/acme.json | grep -v "key" | grep -v "cert"
-        else
-            log_warn "acme.json 文件不存在"
-        fi
-        log_info "5. 检查域名解析..."
-        dig "${TRAEFIK_DOMAIN}"
-        return 1
-    fi
-    
-    log_info "Traefik 健康检查通过"
     return 0
-}
-
-# 清理安装
-cleanup_installation() {
-    log_info "执行清理..."
-    
-    # 停止并移除容器
-    if [ -f "/etc/traefik/docker-compose.yml" ]; then
-        cd /etc/traefik && docker compose down -v || true
-    fi
-    
-    # 移除网络
-    docker network rm traefik_proxy 2>/dev/null || true
-    
-    # 移除配置目录
-    rm -rf /etc/traefik
-    
-    log_info "清理完成"
-}
-
-# 初始化 Traefik 配置
-setup_traefik_config() {
-    log_info "初始化 Traefik 配置..."
-    
-    # 创建必要的目录
-    mkdir -p /etc/traefik/dynamic || handle_error "创建配置目录失败"
-    mkdir -p /etc/traefik/acme || handle_error "创建证书目录失败"
-    
-    # 创建并设置 acme.json 权限
-    touch /etc/traefik/acme/acme.json || handle_error "创建 acme.json 失败"
-    chmod 600 /etc/traefik/acme/acme.json || handle_error "设置 acme.json 权限失败"
-    
-    # 下载配置文件
-    download_configs
 }
 
 # 启动 Traefik
 start_traefik() {
-    log_info "启动 Traefik..."
+    log_info "启动 Traefik 服务..."
     
     # 生成基本认证信息
     if ! generate_basic_auth; then
@@ -529,29 +383,34 @@ start_traefik() {
         return 1
     fi
     
-    # 设置必要的环境变量
-    export TRAEFIK_DOMAIN="$TRAEFIK_DOMAIN"
-    export TRAEFIK_ACME_EMAIL="$TRAEFIK_ACME_EMAIL"
+    # 检查必要的环境变量
+    TRAEFIK_REQUIRED_VARS=(
+        "TRAEFIK_DOMAIN"
+        "TRAEFIK_ACME_EMAIL"
+        "TRAEFIK_BASIC_AUTH"
+        "TRAEFIK_DASHBOARD_USER"
+        "TRAEFIK_DASHBOARD_PASSWORD"
+    )
     
-    # 创建 Docker 网络（如果不存在）
+    for var in "${TRAEFIK_REQUIRED_VARS[@]}"; do
+        if [ -z "${!var}" ]; then
+            log_error "必要的环境变量 $var 未设置"
+            return 1
+        fi
+    done
+    
+    # 创建网络
     if ! docker network ls | grep -q "traefik_proxy"; then
-        docker network create traefik_proxy || return 1
+        docker network create traefik_proxy || handle_error "创建网络失败"
     fi
     
-    cd /etc/traefik || return 1
-    docker compose up -d || return 1
-    
-    # 等待一段时间让容器启动
-    sleep 5
-    
-    # 验证服务状态
-    if ! verify_traefik_health; then
-        log_error "Traefik 服务验证失败，开始回滚..."
-        cleanup_installation
+    # 启动服务
+    if ! docker compose -f /etc/traefik/docker-compose.yml up -d; then
+        log_error "启动 Traefik 失败"
         return 1
     fi
     
-    log_info "Traefik 启动成功"
+    log_info "Traefik 服务已启动"
     return 0
 }
 
@@ -610,12 +469,22 @@ show_usage() {
 
 # 生成基本认证信息
 generate_basic_auth() {
+    log_info "生成基本认证信息..."
     if [ -z "$TRAEFIK_DASHBOARD_USER" ] || [ -z "$TRAEFIK_DASHBOARD_PASSWORD" ]; then
         log_error "缺少 Dashboard 认证信息"
         return 1
     fi
     
     TRAEFIK_BASIC_AUTH=$(htpasswd -nb "$TRAEFIK_DASHBOARD_USER" "$TRAEFIK_DASHBOARD_PASSWORD")
+    if [ -z "$TRAEFIK_BASIC_AUTH" ]; then
+        log_error "生成基本认证信息失败"
+        return 1
+    fi
+    
+    # 写入到环境文件
+    echo "TRAEFIK_BASIC_AUTH=$TRAEFIK_BASIC_AUTH" >> /etc/traefik/.env
+    log_info "基本认证信息已生成"
+    return 0
 }
 
 # 主函数
@@ -648,12 +517,6 @@ main() {
     
     # 生成密码
     generate_password
-    
-    # 配置email
-    configure_email "$TRAEFIK_ACME_EMAIL"
-    
-    # 配置域名
-    configure_domain "$TRAEFIK_DOMAIN"
     
     # 下载配置文件
     download_configs
