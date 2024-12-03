@@ -278,98 +278,60 @@ download_configs() {
     curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/dynamic/middleware.yml -o /etc/traefik/dynamic/middleware.yml || handle_error "下载middleware.yml失败"
 }
 
-# 检查 Traefik 是否正常运行
+# 验证 Traefik 健康状态
 verify_traefik_health() {
-    local max_attempts=30
-    local attempt=1
-    local wait_seconds=10
-    
     log_info "验证 Traefik 服务状态..."
     
-    # 首先检查容器状态
-    while [ $attempt -le $max_attempts ]; do
-        if ! docker ps | grep -q "traefik"; then
-            if [ $attempt -eq $max_attempts ]; then
-                log_error "Traefik 容器未运行"
-                return 1
-            fi
-            log_info "等待 Traefik 容器启动... ($attempt/$max_attempts)"
-            sleep $wait_seconds
-            attempt=$((attempt + 1))
-            continue
-        fi
-        
-        # 检查容器是否健康
-        if [ "$(docker inspect --format='{{.State.Status}}' traefik)" != "running" ]; then
-            log_error "Traefik 容器状态异常"
-            return 1
-        fi
-        
-        break
-    done
+    # 检查容器状态
+    if ! docker compose ps | grep -q "traefik.*running"; then
+        log_error "Traefik 容器未运行"
+        return 1
+    fi
     
-    # 重置计数器
-    attempt=1
-    
-    # 然后验证 HTTPS 访问
+    # 验证 HTTPS 访问
     log_info "验证 HTTPS 访问..."
+    local max_attempts=30
+    local attempt=1
+    local success=false
+    
     while [ $attempt -le $max_attempts ]; do
-        if curl -sIk --max-time 10 "https://${TRAEFIK_DOMAIN}" | grep -q "401 Unauthorized"; then
-            log_info "HTTPS 访问正常"
-            
-            # 验证证书
-            if ! curl -sI --max-time 10 "https://${TRAEFIK_DOMAIN}" | grep -q "Let's Encrypt"; then
-                log_error "SSL 证书配置异常"
-                return 1
-            fi
-            
-            return 0
-        fi
-        
-        if [ $attempt -eq $max_attempts ]; then
-            log_error "无法通过 HTTPS 访问 Traefik"
-            return 1
-        fi
-        
         log_info "等待 HTTPS 服务就绪... ($attempt/$max_attempts)"
-        sleep $wait_seconds
+        if curl -sk "https://${DOMAIN}" >/dev/null 2>&1; then
+            success=true
+            break
+        fi
         attempt=$((attempt + 1))
+        sleep 2
     done
     
-    return 1
-}
-
-# 生成基本认证信息
-generate_basic_auth() {
-    local username="admin"
-    local password=$(openssl rand -base64 12 | tr -d '/+=' | cut -c1-12)
-    
-    # 使用 htpasswd 生成密码哈希
-    if ! command -v htpasswd >/dev/null 2>&1; then
-        if [ "$PKG_MANAGER" = "apt-get" ]; then
-            apt-get install -y apache2-utils || handle_error "安装 apache2-utils 失败"
-        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
-            $PKG_MANAGER install -y httpd-tools || handle_error "安装 httpd-tools 失败"
-        fi
+    if [ "$success" = false ]; then
+        log_error "无法通过 HTTPS 访问 Traefik"
+        return 1
     fi
     
-    # 生成密码哈希
-    local auth_string=$(htpasswd -nb "$username" "$password")
-    if [ $? -ne 0 ]; then
-        handle_error "生成密码哈希失败"
-    fi
-    
-    # 保存认证信息
-    echo "Dashboard 访问信息:"
-    echo "用户名: $username"
-    echo "密码: $password"
-    echo "请保存这些信息！"
-    
-    # 导出环境变量
-    export TRAEFIK_BASIC_AUTH="$auth_string"
+    log_info "Traefik 健康检查通过"
+    return 0
 }
 
-# 启动Traefik
+# 清理安装
+cleanup_installation() {
+    log_info "执行清理..."
+    
+    # 停止并移除容器
+    if [ -f "/etc/traefik/docker-compose.yml" ]; then
+        cd /etc/traefik && docker compose down -v || true
+    fi
+    
+    # 移除网络
+    docker network rm traefik_proxy 2>/dev/null || true
+    
+    # 移除配置目录
+    rm -rf /etc/traefik
+    
+    log_info "清理完成"
+}
+
+# 启动 Traefik
 start_traefik() {
     log_info "启动 Traefik..."
     
@@ -379,11 +341,22 @@ start_traefik() {
     # 导出域名环境变量
     export TRAEFIK_DOMAIN="$DOMAIN"
     
+    # 创建 Docker 网络（如果不存在）
+    if ! docker network ls | grep -q "traefik_proxy"; then
+        docker network create traefik_proxy || handle_error "创建 Docker 网络失败"
+    fi
+    
     cd /etc/traefik || handle_error "无法进入 Traefik 配置目录"
     docker compose up -d || handle_error "启动 Traefik 失败"
     
     # 验证服务状态
-    verify_traefik_health
+    if ! verify_traefik_health; then
+        log_error "Traefik 服务验证失败，开始回滚..."
+        cleanup_installation
+        handle_error "安装失败，系统已回滚"
+    fi
+    
+    log_info "Traefik 启动成功"
 }
 
 # 解析命令行参数
