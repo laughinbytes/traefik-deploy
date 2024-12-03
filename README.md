@@ -18,12 +18,12 @@
 使用以下命令一键安装：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/install.sh | sudo bash -s -- --email your.email@example.com --domain traefik.example.com
 ```
 
-安装过程中需要输入：
-- 用于 Let's Encrypt 证书通知的邮箱地址
-- Traefik Dashboard 的域名
+安装要求：
+- 域名已正确解析到服务器 IP
+- 用于接收 Let's Encrypt 证书通知的邮箱地址
 
 ## 系统要求
 
@@ -31,7 +31,7 @@ curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/in
 - Root 权限
 - 互联网连接
 - 80 和 443 端口可访问
-- 域名已正确解析到服务器 IP
+- Docker Engine 20.10.0 或更高版本
 
 ## 配置说明
 
@@ -102,7 +102,7 @@ docker compose config
 
 ## 贡献
 
-欢迎提交 Pull Requests 和 Issues！
+欢迎提交 Issue 和 Pull Request！
 
 ## 许可证
 
