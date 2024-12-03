@@ -331,6 +331,22 @@ cleanup_installation() {
     log_info "清理完成"
 }
 
+# 初始化 Traefik 配置
+setup_traefik_config() {
+    log_info "初始化 Traefik 配置..."
+    
+    # 创建必要的目录
+    mkdir -p /etc/traefik/dynamic || handle_error "创建配置目录失败"
+    mkdir -p /etc/traefik/acme || handle_error "创建证书目录失败"
+    
+    # 创建并设置 acme.json 权限
+    touch /etc/traefik/acme/acme.json || handle_error "创建 acme.json 失败"
+    chmod 600 /etc/traefik/acme/acme.json || handle_error "设置 acme.json 权限失败"
+    
+    # 下载配置文件
+    download_configs
+}
+
 # 启动 Traefik
 start_traefik() {
     log_info "启动 Traefik..."
@@ -338,8 +354,9 @@ start_traefik() {
     # 生成基本认证信息
     generate_basic_auth
     
-    # 导出域名环境变量
+    # 设置必要的环境变量
     export TRAEFIK_DOMAIN="$DOMAIN"
+    export TRAEFIK_ACME_EMAIL="$EMAIL"  # 添加 ACME 邮箱变量
     
     # 创建 Docker 网络（如果不存在）
     if ! docker network ls | grep -q "traefik_proxy"; then
@@ -435,8 +452,8 @@ main() {
     # 安装 Docker Compose
     install_docker_compose
     
-    # 创建必要的目录
-    create_directories
+    # 初始化 Traefik 配置
+    setup_traefik_config
     
     # 配置邮箱
     configure_email
@@ -446,9 +463,6 @@ main() {
     
     # 生成密码
     generate_password
-    
-    # 下载配置文件
-    download_configs
     
     # 启动 Traefik
     start_traefik
