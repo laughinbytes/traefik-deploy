@@ -28,12 +28,15 @@ rollback() {
     # 停止并删除所有Docker容器和网络
     if command -v docker >/dev/null; then
         log_info "清理Docker资源..."
-        docker-compose -f /etc/traefik/docker-compose.yml down 2>/dev/null || true
+        docker compose -f /etc/traefik/docker-compose.yml down 2>/dev/null || true
         docker network rm traefik_proxy 2>/dev/null || true
+        
+        # 清理所有相关容器
+        docker ps -a | grep "traefik" | awk '{print $1}' | xargs -r docker rm -f 2>/dev/null || true
     fi
     
-    # 删除Traefik相关文件
-    log_info "删除Traefik配置..."
+    # 删除证书和配置
+    log_info "清理证书和配置..."
     rm -rf /etc/traefik
     
     # 如果Docker是由脚本安装的，则卸载Docker
@@ -115,31 +118,61 @@ install_docker() {
     fi
 }
 
-# 安装Docker Compose
+# 安装 Docker Compose
 install_docker_compose() {
-    log_info "检查Docker Compose..."
-    if ! command -v docker-compose >/dev/null; then
-        log_info "安装Docker Compose..."
-        COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4) || handle_error "获取Docker Compose版本失败"
-        curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose || handle_error "下载Docker Compose失败"
-        chmod +x /usr/local/bin/docker-compose || handle_error "设置Docker Compose权限失败"
-    else
-        log_info "Docker Compose已安装"
+    log_info "检查 Docker Compose..."
+    
+    # 首先检查 docker compose 命令是否可用
+    if docker compose version >/dev/null 2>&1; then
+        log_info "Docker Compose (插件版本) 已可用"
+        return 0
     fi
+    
+    # 获取 Docker 版本
+    DOCKER_VERSION=$(docker version --format '{{.Server.Version}}' 2>/dev/null)
+    if [ -z "$DOCKER_VERSION" ]; then
+        handle_error "无法获取 Docker 版本"
+    fi
+    
+    # 如果 Docker 版本 >= 23.0，说明应该自带 compose 插件，可能是安装不完整
+    if [ "$(printf '%s\n' "23.0" "$DOCKER_VERSION" | sort -V | head -n1)" = "23.0" ]; then
+        log_warn "Docker $DOCKER_VERSION 应该包含 Compose 插件，尝试修复安装..."
+        if [ "$PKG_MANAGER" = "apt-get" ]; then
+            apt-get install -y docker-ce-cli || handle_error "安装 Docker CLI 失败"
+        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
+            $PKG_MANAGER install -y docker-ce-cli || handle_error "安装 Docker CLI 失败"
+        fi
+    else
+        # 对于旧版本 Docker，安装 compose 插件
+        log_info "Docker 版本 < 23.0，安装 Compose 插件..."
+        if [ "$PKG_MANAGER" = "apt-get" ]; then
+            apt-get install -y docker-compose-plugin || handle_error "安装 Docker Compose 插件失败"
+        elif [ "$PKG_MANAGER" = "yum" ] || [ "$PKG_MANAGER" = "dnf" ]; then
+            $PKG_MANAGER install -y docker-compose-plugin || handle_error "安装 Docker Compose 插件失败"
+        fi
+    fi
+    
+    # 最终验证
+    if ! docker compose version >/dev/null 2>&1; then
+        handle_error "Docker Compose 安装验证失败"
+    fi
+    
+    log_info "Docker Compose 可用"
+    return 0
 }
 
 # 创建必要的目录
 create_directories() {
     log_info "创建必要的目录..."
-    mkdir -p /etc/traefik
+    
+    # 创建 Traefik 配置目录
     mkdir -p /etc/traefik/dynamic
     mkdir -p /etc/traefik/acme
     
-    # 设置目录权限
-    chown -R root:root /etc/traefik
-    chmod 755 /etc/traefik
-    chmod 755 /etc/traefik/dynamic
-    chmod 755 /etc/traefik/acme
+    # 设置适当的权限
+    chmod 600 /etc/traefik/acme
+    
+    log_info "目录创建完成"
 }
 
 # 生成密码
@@ -158,11 +191,13 @@ generate_password() {
     DASHBOARD_PASSWORD=$(openssl rand -base64 12) || handle_error "生成密码失败"
     
     # 创建密码文件
-    htpasswd -bc /etc/traefik/dashboard_users.htpasswd $DASHBOARD_USER $DASHBOARD_PASSWORD || handle_error "创建密码文件失败"
+    htpasswd -bc /etc/traefik/dashboard_users.htpasswd "$DASHBOARD_USER" "$DASHBOARD_PASSWORD" || handle_error "创建密码文件失败"
     
-    echo "Dashboard 登录信息："
-    echo "用户名: $DASHBOARD_USER"
-    echo "密码: $DASHBOARD_PASSWORD"
+    # 导出变量供主函数使用
+    export TRAEFIK_DASHBOARD_USER="$DASHBOARD_USER"
+    export TRAEFIK_DASHBOARD_PASSWORD="$DASHBOARD_PASSWORD"
+    
+    return 0
 }
 
 # 检查域名解析
@@ -192,90 +227,43 @@ check_domain_resolution() {
 
 # 配置email
 configure_email() {
-    local max_attempts=3
-    local attempt=1
-    local email=""
+    log_info "配置邮箱..."
     
-    while [ $attempt -le $max_attempts ]; do
-        log_info "配置 Let's Encrypt 邮箱... (尝试 $attempt/$max_attempts)"
-        echo "邮箱地址将用于接收 Let's Encrypt 的证书过期通知和重要提醒"
-        read -p "请输入邮箱地址 (例如: your.name@example.com): " email
-        
-        # 检查是否输入为空
-        if [ -z "$email" ]; then
-            log_error "邮箱地址不能为空"
-            attempt=$((attempt + 1))
-            continue
-        fi
-        
-        # 验证邮箱格式
-        if [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
-            # 尝试写入配置文件
-            if echo "TRAEFIK_ACME_EMAIL=$email" > /etc/traefik/.env; then
-                log_info "邮箱配置成功: $email"
-                return 0
-            else
-                log_error "无法写入配置文件"
-                rollback "邮箱配置失败"
-                return 1
-            fi
-        else
-            log_error "无效的邮箱格式，请使用正确的邮箱地址格式"
-            attempt=$((attempt + 1))
-        fi
-    done
+    # 验证邮箱格式
+    if [[ ! "$EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+        log_error "无效的邮箱格式: $EMAIL"
+        exit 1
+    fi
     
-    log_error "已达到最大重试次数 ($max_attempts 次)"
-    rollback "邮箱配置失败"
-    return 1
+    # 导出环境变量
+    export TRAEFIK_ACME_EMAIL="$EMAIL"
+    # 写入到环境文件
+    echo "TRAEFIK_ACME_EMAIL=$EMAIL" > /etc/traefik/.env
+    log_info "邮箱配置成功: $EMAIL"
 }
 
 # 配置域名
 configure_domain() {
-    local max_attempts=3
-    local attempt=1
-    local domain=""
+    log_info "配置域名..."
     
-    while [ $attempt -le $max_attempts ]; do
-        log_info "配置域名... (尝试 $attempt/$max_attempts)"
-        echo "请输入您的域名，确保该域名已经正确解析到本服务器IP"
-        read -p "请输入域名 (例如: example.com 或 sub.example.com): " domain
-        
-        # 检查是否输入为空
-        if [ -z "$domain" ]; then
-            log_error "域名不能为空"
-            attempt=$((attempt + 1))
-            continue
-        fi
-        
-        # 验证域名格式
-        if [[ "$domain" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
-            # 检查域名解析
-            log_info "正在检查域名解析..."
-            if [ "$(check_domain_resolution "$domain")" = "true" ]; then
-                # 尝试写入配置文件
-                if echo "TRAEFIK_DOMAIN=$domain" >> /etc/traefik/.env; then
-                    log_info "域名配置成功: $domain"
-                    return 0
-                else
-                    log_error "无法写入配置文件"
-                    rollback "域名配置失败"
-                    return 1
-                fi
-            else
-                log_error "域名解析失败，请确保域名已正确解析到服务器IP"
-                attempt=$((attempt + 1))
-                continue
-            fi
-        else
-            log_error "无效的域名格式，请使用正确的域名格式"
-            attempt=$((attempt + 1))
-        fi
-    done
+    # 验证域名格式
+    if [[ ! "$TRAEFIK_DOMAIN" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]; then
+        log_error "无效的域名格式: $TRAEFIK_DOMAIN"
+        exit 1
+    fi
     
-    log_error "已达到最大重试次数 ($max_attempts 次)"
-    rollback "域名配置失败"
-    return 1
+    # 检查域名解析
+    log_info "正在检查域名解析..."
+    if [ "$(check_domain_resolution "$TRAEFIK_DOMAIN")" != "true" ]; then
+        log_error "域名解析失败，请确保域名 $TRAEFIK_DOMAIN 已正确解析到服务器IP"
+        exit 1
+    fi
+    
+    # 导出环境变量
+    export TRAEFIK_DOMAIN
+    # 写入到环境文件
+    echo "TRAEFIK_DOMAIN=$TRAEFIK_DOMAIN" >> /etc/traefik/.env
+    log_info "域名配置成功: $TRAEFIK_DOMAIN"
 }
 
 # 下载配置文件
@@ -290,121 +278,210 @@ download_configs() {
     curl -L https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/configs/dynamic/middleware.yml -o /etc/traefik/dynamic/middleware.yml || handle_error "下载middleware.yml失败"
 }
 
+# 检查 Traefik 是否正常运行
+verify_traefik_health() {
+    local max_attempts=30
+    local attempt=1
+    local wait_seconds=10
+    
+    log_info "验证 Traefik 服务状态..."
+    
+    # 首先检查容器状态
+    while [ $attempt -le $max_attempts ]; do
+        if ! docker ps | grep -q "traefik"; then
+            if [ $attempt -eq $max_attempts ]; then
+                log_error "Traefik 容器未运行"
+                return 1
+            fi
+            log_info "等待 Traefik 容器启动... ($attempt/$max_attempts)"
+            sleep $wait_seconds
+            attempt=$((attempt + 1))
+            continue
+        fi
+        
+        # 检查容器是否健康
+        if [ "$(docker inspect --format='{{.State.Status}}' traefik)" != "running" ]; then
+            log_error "Traefik 容器状态异常"
+            return 1
+        fi
+        
+        break
+    done
+    
+    # 重置计数器
+    attempt=1
+    
+    # 然后验证 HTTPS 访问
+    log_info "验证 HTTPS 访问..."
+    while [ $attempt -le $max_attempts ]; do
+        if curl -sIk --max-time 10 "https://${TRAEFIK_DOMAIN}" | grep -q "401 Unauthorized"; then
+            log_info "HTTPS 访问正常"
+            
+            # 验证证书
+            if ! curl -sI --max-time 10 "https://${TRAEFIK_DOMAIN}" | grep -q "Let's Encrypt"; then
+                log_error "SSL 证书配置异常"
+                return 1
+            fi
+            
+            return 0
+        fi
+        
+        if [ $attempt -eq $max_attempts ]; then
+            log_error "无法通过 HTTPS 访问 Traefik"
+            return 1
+        fi
+        
+        log_info "等待 HTTPS 服务就绪... ($attempt/$max_attempts)"
+        sleep $wait_seconds
+        attempt=$((attempt + 1))
+    done
+    
+    return 1
+}
+
 # 启动Traefik
 start_traefik() {
-    log_info "启动Traefik..."
-    cd /etc/traefik || handle_error "无法进入 Traefik 配置目录"
+    log_info "启动 Traefik..."
     
-    # 创建 Docker 网络
-    if ! docker network inspect traefik_proxy >/dev/null 2>&1; then
-        log_info "创建 Docker 网络: traefik_proxy"
+    # 创建 Docker 网络（如果不存在）
+    if ! docker network ls | grep -q "traefik_proxy"; then
         docker network create traefik_proxy || handle_error "创建 Docker 网络失败"
     fi
     
-    # 停止现有的 Traefik 容器（如果存在）
-    docker-compose down >/dev/null 2>&1 || true
-    
     # 启动 Traefik
-    docker-compose up -d || handle_error "启动 Traefik 失败"
+    cd /etc/traefik || handle_error "无法进入 Traefik 配置目录"
+    docker compose down -v 2>/dev/null || true
+    docker compose up -d || handle_error "启动 Traefik 失败"
     
-    # 等待 Traefik 启动
-    log_info "等待 Traefik 启动..."
-    local max_attempts=12
-    local attempt=1
-    local container_ok=false
+    # 验证服务健康状态
+    if ! verify_traefik_health; then
+        handle_error "Traefik 服务验证失败"
+    fi
     
-    while [ $attempt -le $max_attempts ]; do
-        # 检查容器状态
-        if docker-compose ps | grep -q "traefik.*Up.*"; then
-            # 检查容器健康状态
-            if docker inspect --format '{{.State.Running}}' traefik 2>/dev/null | grep -q "true"; then
-                # 检查端口是否正在监听
-                if netstat -tln | grep -q ":80.*LISTEN" && netstat -tln | grep -q ":443.*LISTEN"; then
-                    container_ok=true
-                    break
+    log_info "Traefik 启动成功"
+    return 0
+}
+
+# 解析命令行参数
+parse_arguments() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --email)
+                if [ -z "$2" ]; then
+                    log_error "--email 参数需要一个值"
+                    show_usage
+                    exit 1
                 fi
-            fi
-        fi
-        
-        log_info "等待服务就绪... (尝试 $attempt/$max_attempts)"
-        sleep 5
-        attempt=$((attempt + 1))
+                EMAIL="$2"
+                shift 2
+                ;;
+            --domain)
+                if [ -z "$2" ]; then
+                    log_error "--domain 参数需要一个值"
+                    show_usage
+                    exit 1
+                fi
+                TRAEFIK_DOMAIN="$2"
+                shift 2
+                ;;
+            --help)
+                show_usage
+                exit 0
+                ;;
+            *)
+                log_error "未知参数: $1"
+                show_usage
+                exit 1
+                ;;
+        esac
     done
 
-    if [ "$container_ok" != "true" ]; then
-        log_error "Traefik 服务未能正常启动"
-        log_error "容器日志:"
-        docker-compose logs
-        handle_error "服务启动失败"
+    # 验证必要参数
+    if [ -z "$EMAIL" ] || [ -z "$TRAEFIK_DOMAIN" ]; then
+        log_error "必须提供 --email 和 --domain 参数"
+        show_usage
+        exit 1
     fi
+}
 
-    # 检查证书配置
-    log_info "检查证书配置..."
-    local max_cert_attempts=12  # 最多等待 2 分钟
-    local cert_attempt=1
-    local cert_ok=false
-
-    while [ $cert_attempt -le $max_cert_attempts ]; do
-        # 检查容器日志中是否有证书相关错误
-        if docker-compose logs | grep -i "error.*certificate" >/dev/null 2>&1; then
-            log_error "证书配置发生错误"
-            docker-compose logs | grep -i "error.*certificate"
-            handle_error "SSL证书配置失败"
-        fi
-
-        # 检查 acme.json 是否包含证书数据
-        if [ -s "/etc/traefik/acme/acme.json" ]; then
-            if grep -q "Certificate" "/etc/traefik/acme/acme.json" 2>/dev/null; then
-                cert_ok=true
-                break
-            fi
-        fi
-
-        log_info "等待证书配置完成... (尝试 $cert_attempt/$max_cert_attempts)"
-        sleep 10
-        cert_attempt=$((cert_attempt + 1))
-    done
-
-    if [ "$cert_ok" != "true" ]; then
-        log_error "等待证书配置超时"
-        log_error "Traefik 日志:"
-        docker-compose logs
-        handle_error "SSL证书配置失败"
-    fi
-
-    log_info "Traefik 服务启动成功"
+# 显示使用说明
+show_usage() {
+    echo "使用方法:"
+    echo "curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/install.sh | sudo bash -s -- --email user@example.com --domain traefik.example.com"
+    echo
+    echo "参数说明:"
+    echo "  --email EMAIL    用于 Let's Encrypt 证书通知的邮箱地址"
+    echo "  --domain DOMAIN  Traefik Dashboard 的域名"
+    echo "  --help          显示此帮助信息"
 }
 
 # 主函数
 main() {
     log_info "开始安装 Traefik..."
     
-    # 设置 trap 来捕获错误
-    trap 'handle_error "未知错误"' ERR
+    # 解析命令行参数
+    parse_arguments "$@"
     
-    # 首先执行基础安装步骤
+    # 设置 trap 来捕获错误和中断信号
+    trap 'rollback "安装过程被中断"' INT TERM
+    trap 'rollback "安装过程发生错误"' ERR
+    
+    # 检查系统要求
     check_system_requirements
+    
+    # 安装依赖
     install_dependencies
+    
+    # 安装 Docker
     install_docker
+    
+    # 安装 Docker Compose
     install_docker_compose
+    
+    # 创建必要的目录
     create_directories
     
-    # 然后获取配置信息
-    configure_email || handle_error "邮箱配置失败"
-    configure_domain || handle_error "域名配置失败"
+    # 配置邮箱
+    configure_email
     
-    # 最后执行配置和启动
+    # 配置域名
+    configure_domain
+    
+    # 生成密码
     generate_password
+    
+    # 下载配置文件
     download_configs
+    
+    # 启动 Traefik
     start_traefik
     
-    # 禁用 trap
-    trap - ERR
+    # 移除错误处理 trap
+    trap - ERR INT TERM
     
     log_info "Traefik 安装完成!"
-    log_info "请确保将以下域名指向此服务器: $domain"
-    log_info "Dashboard 将在配置DNS并等待证书颁发后可通过 https://$domain 访问"
+    
+    # 打印安装信息
+    echo "==================================================="
+    echo "安装成功! 以下是重要信息："
+    echo
+    echo "Traefik Dashboard:"
+    echo "- 地址：https://$TRAEFIK_DOMAIN"
+    echo "- 用户名：$TRAEFIK_DASHBOARD_USER"
+    echo "- 密码：$TRAEFIK_DASHBOARD_PASSWORD"
+    echo
+    echo "配置文件位置："
+    echo "- 主配置：/etc/traefik/traefik.yml"
+    echo "- Docker配置：/etc/traefik/docker-compose.yml"
+    echo "- 动态配置：/etc/traefik/dynamic/"
+    echo
+    echo "常用命令："
+    echo "- 查看日志：docker compose -f /etc/traefik/docker-compose.yml logs -f"
+    echo "- 重启服务：docker compose -f /etc/traefik/docker-compose.yml restart"
+    echo "- 停止服务：docker compose -f /etc/traefik/docker-compose.yml down"
+    echo "- 启动服务：docker compose -f /etc/traefik/docker-compose.yml up -d"
+    echo "==================================================="
 }
 
-# 执行主函数
-main
+# 执行主函数，传递所有命令行参数
+main "$@"

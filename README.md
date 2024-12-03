@@ -73,31 +73,31 @@ curl -fsSL https://raw.githubusercontent.com/laughinbytes/traefik-deploy/main/in
 
 ```bash
 cd /etc/traefik
-docker-compose pull
-docker-compose up -d
+docker compose pull
+docker compose up -d
 ```
 
 ### 查看日志
 
 ```bash
-docker-compose logs -f traefik
+docker compose logs -f traefik
 ```
 
 ## 故障排除
 
 1. 检查 Traefik 状态：
 ```bash
-docker-compose ps
+docker compose ps
 ```
 
 2. 检查日志：
 ```bash
-docker-compose logs -f
+docker compose logs -f
 ```
 
 3. 验证配置：
 ```bash
-docker-compose config
+docker compose config
 ```
 
 ## 贡献
